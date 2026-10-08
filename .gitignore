@@ -1,0 +1,14 @@
+# Secrets
+.env
+.env.*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Local Claude Code tooling
+.claude/
+
+!.env.example
