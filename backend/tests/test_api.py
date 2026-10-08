@@ -22,7 +22,7 @@ def llm():
 @pytest.fixture
 def client(store, llm):
     # Fresh limits per test so tests don't throttle each other.
-    for limiter in (api.demo_limiter, api.upload_limiter, api.ask_limiter):
+    for limiter in (api.demo_limiter, api.upload_limiter, api.ask_limiter, api.eval_limiter):
         limiter.reset()
     app = create_app()
     app.dependency_overrides[api.get_store] = lambda: store
@@ -120,3 +120,43 @@ def test_rate_limiter_window_slides():
     assert limiter.allow("other-ip")
     now[0] = 10.0
     assert limiter.allow("ip")
+
+
+def test_evaluation_needs_a_ready_document(client):
+    key = new_demo(client)
+    assert client.post(f"/w/{key}/evaluations").status_code == 409
+
+
+def test_evaluation_runs_in_background_and_report_is_readable(client, store, llm):
+    import json
+
+    from app.store import StoredChunk
+
+    key = new_demo(client)
+    upload(client, key)
+    store.stored_chunks = [StoredChunk(1, 1, "Refunds take 30 days.")]
+    store.hits = [SearchHit(1, "doc-1", 1, "Refunds take 30 days.", 0.03)]
+    llm.replies = [
+        json.dumps([{"source": 1, "question": "Refund window?", "answer": "30 days"}]),
+        "30 days [1].",
+        "NOT_FOUND",
+        "NOT_FOUND",
+        json.dumps([{"id": 0, "faithful": True, "correct": True}]),
+    ]
+    response = client.post(f"/w/{key}/evaluations")
+    assert response.status_code == 202
+    run_id = response.json()["run_id"]
+
+    # TestClient runs background tasks before returning, so the report is ready.
+    report = client.get(f"/w/{key}/evaluations/{run_id}").json()
+    assert report["status"] == "done"
+    assert report["metrics"]["questions"] == 3
+    assert report["metrics"]["refusal_rate"] == 1.0
+    assert [i["question"] for i in report["items"]][0] == "Refund window?"
+
+
+def test_evaluation_from_another_workspace_is_404(client, store):
+    key = new_demo(client)
+    other = store.create_workspace("Other", is_demo=True)
+    run = store.create_eval_run(other.id)
+    assert client.get(f"/w/{key}/evaluations/{run.id}").status_code == 404

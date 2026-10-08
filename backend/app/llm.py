@@ -65,8 +65,18 @@ class LLM:
             embed_model=os.environ.get("GEMINI_EMBED_MODEL", DEFAULT_EMBED_MODEL),
         )
 
-    def generate(self, prompt: str, system: str | None = None, temperature: float = 0.2) -> str:
-        config = types.GenerateContentConfig(system_instruction=system, temperature=temperature)
+    def generate(
+        self,
+        prompt: str,
+        system: str | None = None,
+        temperature: float = 0.2,
+        json_output: bool = False,
+    ) -> str:
+        config = types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=temperature,
+            response_mime_type="application/json" if json_output else None,
+        )
         models = [self.chat_model] + ([self.fallback_model] if self.fallback_model else [])
 
         last_error: errors.APIError | None = None

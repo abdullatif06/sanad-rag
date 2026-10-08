@@ -42,6 +42,7 @@ class Answer:
     language: str
     found: bool
     citations: list[Citation]
+    retrieved_chunk_ids: tuple[int, ...] = ()
 
 
 def detect_language(text: str) -> str:
@@ -61,9 +62,10 @@ def answer(store, llm, workspace_id: str, question: str, top_k: int = DEFAULT_TO
     reply = llm.generate(_build_prompt(question, hits), system=system).strip()
 
     citations = _extract_citations(reply, hits)
+    retrieved = tuple(hit.chunk_id for hit in hits)
     if NOT_FOUND_TOKEN in reply or not citations:
-        return _not_found(language)
-    return Answer(reply, language, True, citations)
+        return _not_found(language, retrieved)
+    return Answer(reply, language, True, citations, retrieved)
 
 
 def _build_prompt(question: str, hits: list[SearchHit]) -> str:
@@ -80,5 +82,5 @@ def _extract_citations(reply: str, hits: list[SearchHit]) -> list[Citation]:
     ]
 
 
-def _not_found(language: str) -> Answer:
-    return Answer(NOT_FOUND_MESSAGES[language], language, False, [])
+def _not_found(language: str, retrieved: tuple[int, ...] = ()) -> Answer:
+    return Answer(NOT_FOUND_MESSAGES[language], language, False, [], retrieved)

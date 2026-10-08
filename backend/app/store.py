@@ -35,6 +35,32 @@ class Document:
 
 
 @dataclass(frozen=True)
+class StoredChunk:
+    id: int
+    page: int
+    content: str
+
+
+@dataclass(frozen=True)
+class EvalRun:
+    id: str
+    workspace_id: str
+    status: str
+    metrics: dict[str, Any] | None
+    created_at: str
+
+
+@dataclass(frozen=True)
+class EvalItem:
+    question: str
+    language: str
+    expected_chunk_id: int | None
+    answer: str
+    cited_chunk_ids: list[int]
+    scores: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class SearchHit:
     chunk_id: int
     document_id: str
@@ -151,6 +177,59 @@ class Store:
             for r in rows
         ]
 
+    def list_chunks(self, workspace_id: str, limit: int = 500) -> list[StoredChunk]:
+        rows = (
+            self.client.table("chunks")
+            .select("id,page,content")
+            .eq("workspace_id", workspace_id)
+            .order("id")
+            .limit(limit)
+            .execute()
+            .data
+        )
+        return [StoredChunk(r["id"], r["page"], r["content"]) for r in rows]
+
+    # Evaluations --------------------------------------------------------------
+
+    def create_eval_run(self, workspace_id: str) -> EvalRun:
+        return _eval_run(self._insert_one("eval_runs", {"workspace_id": workspace_id}))
+
+    def get_eval_run(self, run_id: str) -> EvalRun | None:
+        rows = self.client.table("eval_runs").select("*").eq("id", run_id).execute().data
+        return _eval_run(rows[0]) if rows else None
+
+    def add_eval_items(self, run_id: str, items: list[EvalItem]) -> None:
+        if not items:
+            return
+        rows = [
+            {
+                "run_id": run_id,
+                "question": item.question,
+                "language": item.language,
+                "expected_chunk_id": item.expected_chunk_id,
+                "answer": item.answer,
+                "cited_chunk_ids": item.cited_chunk_ids,
+                "scores": item.scores,
+            }
+            for item in items
+        ]
+        self.client.table("eval_items").insert(rows).execute()
+
+    def list_eval_items(self, run_id: str) -> list[EvalItem]:
+        rows = self.client.table("eval_items").select("*").eq("run_id", run_id).order("id").execute().data
+        return [
+            EvalItem(
+                r["question"], r["language"], r["expected_chunk_id"], r["answer"] or "", r["cited_chunk_ids"], r["scores"] or {}
+            )
+            for r in rows
+        ]
+
+    def finish_eval_run(self, run_id: str, metrics: dict[str, Any]) -> None:
+        self.client.table("eval_runs").update({"status": "done", "metrics": metrics}).eq("id", run_id).execute()
+
+    def fail_eval_run(self, run_id: str, error: str) -> None:
+        self.client.table("eval_runs").update({"status": "failed", "metrics": {"error": error}}).eq("id", run_id).execute()
+
     # Helpers ------------------------------------------------------------------
 
     def _insert_one(self, table: str, values: dict[str, Any]) -> dict[str, Any]:
@@ -165,6 +244,10 @@ class Store:
 
 def _workspace(row: dict[str, Any]) -> Workspace:
     return Workspace(row["id"], row["name"], row["public_key"], row["is_demo"])
+
+
+def _eval_run(row: dict[str, Any]) -> EvalRun:
+    return EvalRun(row["id"], row["workspace_id"], row["status"], row["metrics"], row["created_at"])
 
 
 def _document(row: dict[str, Any]) -> Document:

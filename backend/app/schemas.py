@@ -1,5 +1,7 @@
 """Request and response shapes for the HTTP API."""
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -25,6 +27,26 @@ class CitationResponse(BaseModel):
     document_id: str
     page: int
     content: str
+
+
+class EvalRunCreated(BaseModel):
+    run_id: str
+    status: str
+
+
+class EvalItemResponse(BaseModel):
+    question: str
+    language: str
+    answer: str
+    scores: dict[str, Any]
+
+
+class EvalRunResponse(BaseModel):
+    run_id: str
+    status: str
+    created_at: str
+    metrics: dict[str, Any] | None
+    items: list[EvalItemResponse]
 
 
 class AskResponse(BaseModel):

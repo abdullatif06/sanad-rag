@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field, replace
 
 from app.llm import LLMError
-from app.store import Document, SearchHit, Workspace
+from app.store import Document, EvalItem, EvalRun, SearchHit, StoredChunk, Workspace
 
 
 @dataclass
@@ -14,9 +14,10 @@ class FakeLLM:
     embedded: list[str] = field(default_factory=list)
     queries: list[str] = field(default_factory=list)
 
-    def generate(self, prompt: str, system: str | None = None, temperature: float = 0.2) -> str:
+    def generate(self, prompt: str, system: str | None = None, temperature: float = 0.2, json_output: bool = False) -> str:
         self.prompts.append((prompt, system))
-        return self.replies.pop(0)
+        reply = self.replies.pop(0)
+        return reply(prompt) if callable(reply) else reply
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         if self.fail_embedding:
@@ -71,3 +72,31 @@ class FakeStore:
     def search(self, workspace_id, query_embedding, query_text, match_count=8) -> list[SearchHit]:
         self.searches.append((workspace_id, query_embedding, query_text, match_count))
         return self.hits[:match_count]
+
+    # Evaluations
+    stored_chunks: list[StoredChunk] = field(default_factory=list)
+    eval_runs: dict[str, EvalRun] = field(default_factory=dict)
+    eval_items: dict[str, list[EvalItem]] = field(default_factory=dict)
+
+    def list_chunks(self, workspace_id: str, limit: int = 500) -> list[StoredChunk]:
+        return self.stored_chunks[:limit]
+
+    def create_eval_run(self, workspace_id: str) -> EvalRun:
+        run = EvalRun(f"run-{len(self.eval_runs) + 1}", workspace_id, "running", None, "2026-10-08T00:00:00Z")
+        self.eval_runs[run.id] = run
+        return run
+
+    def get_eval_run(self, run_id: str) -> EvalRun | None:
+        return self.eval_runs.get(run_id)
+
+    def add_eval_items(self, run_id: str, items: list[EvalItem]) -> None:
+        self.eval_items.setdefault(run_id, []).extend(items)
+
+    def list_eval_items(self, run_id: str) -> list[EvalItem]:
+        return self.eval_items.get(run_id, [])
+
+    def finish_eval_run(self, run_id: str, metrics: dict) -> None:
+        self.eval_runs[run_id] = replace(self.eval_runs[run_id], status="done", metrics=metrics)
+
+    def fail_eval_run(self, run_id: str, error: str) -> None:
+        self.eval_runs[run_id] = replace(self.eval_runs[run_id], status="failed", metrics={"error": error})

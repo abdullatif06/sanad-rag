@@ -7,9 +7,10 @@ accept uploads; owner accounts (signed-in uploads) come with the dashboard.
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, status
 
 from app.answering import answer
+from app.evaluation import run_evaluation
 from app.ingest import ingest
 from app.llm import LLM, LLMError
 from app.parsing import NoTextError, UnsupportedFileError
@@ -20,6 +21,9 @@ from app.schemas import (
     CitationResponse,
     DemoWorkspaceResponse,
     DocumentResponse,
+    EvalItemResponse,
+    EvalRunCreated,
+    EvalRunResponse,
 )
 from app.store import Document, Store, Workspace
 
@@ -30,6 +34,7 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 demo_limiter = RateLimiter(max_calls=5, per_seconds=3600)
 upload_limiter = RateLimiter(max_calls=10, per_seconds=3600)
 ask_limiter = RateLimiter(max_calls=20, per_seconds=60)
+eval_limiter = RateLimiter(max_calls=3, per_seconds=3600)
 
 router = APIRouter()
 
@@ -125,6 +130,40 @@ def ask(body: AskRequest, workspace: WorkspaceDep, store: StoreDep, llm: LLMDep)
         citations=[
             CitationResponse(number=c.number, document_id=c.document_id, page=c.page, content=c.content)
             for c in result.citations
+        ],
+    )
+
+
+@router.post(
+    "/w/{public_key}/evaluations",
+    response_model=EvalRunCreated,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[rate_limited(eval_limiter)],
+)
+def start_evaluation(
+    workspace: WorkspaceDep, store: StoreDep, llm: LLMDep, background: BackgroundTasks
+) -> EvalRunCreated:
+    if not any(d.status == "ready" for d in store.list_documents(workspace.id)):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Upload at least one document first")
+    run = store.create_eval_run(workspace.id)
+    # Takes minutes on the free tier, so it runs after the response; poll GET for progress.
+    background.add_task(run_evaluation, store, llm, workspace.id, run.id)
+    return EvalRunCreated(run_id=run.id, status=run.status)
+
+
+@router.get("/w/{public_key}/evaluations/{run_id}", response_model=EvalRunResponse)
+def get_evaluation(run_id: str, workspace: WorkspaceDep, store: StoreDep) -> EvalRunResponse:
+    run = store.get_eval_run(run_id)
+    if run is None or run.workspace_id != workspace.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Evaluation not found")
+    return EvalRunResponse(
+        run_id=run.id,
+        status=run.status,
+        created_at=run.created_at,
+        metrics=run.metrics,
+        items=[
+            EvalItemResponse(question=i.question, language=i.language, answer=i.answer, scores=i.scores)
+            for i in store.list_eval_items(run.id)
         ],
     )
 
